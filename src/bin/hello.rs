@@ -2,6 +2,8 @@
 #![no_std]
 
 use km3_rs as _; // global logger + panicking-behavior + memory layout
+use km3_rs::dma::{DmaExt, TxDma};
+use km3_rs::i2c_slave::I2CSlave;
 use km3_rs::timer::{Event, Timer};
 use km3_rs::write_spi::{Channel, MCP4922};
 use stm32f0xx_hal::delay::Delay;
@@ -25,6 +27,7 @@ const APP: () = {
         motor2_step: Pin<Output<PushPull>>,
         motor1_dir: Pin<Output<PushPull>>,
         motor2_dir: Pin<Output<PushPull>>,
+        i2c_slave: I2CSlave,
     }
 
     #[init]
@@ -34,6 +37,9 @@ const APP: () = {
         let mut device: stm32f0xx_hal::stm32::Peripherals = cx.device;
 
         let raw_rcc = device.RCC;
+
+        raw_rcc.apb1enr.modify(|_, w| w.i2c1en().enabled());
+        raw_rcc.apb1rstr.modify(|_, w| w.i2c1rst().reset());
 
         // todo perform manipulation of RCC register values for custom peripherals
         let mut rcc = raw_rcc
@@ -74,9 +80,12 @@ const APP: () = {
 
         ldac.set_low().unwrap();
 
+        // let dma = device.DMA1.split(&mut rcc);
+        // let spi_channel = dma.3;
+
         let mut dac = MCP4922::new(device.SPI1, mosi, sck, cs);
-        dac.set_voltage(Channel::A, 1.0f32);
-        dac.set_voltage(Channel::B, 1.0f32);
+        dac.set_voltage(Channel::A, 2.0f32);
+        dac.set_voltage(Channel::B, 2.0f32);
 
         let mut motor1_timer = Timer::tim14(device.TIM14, 0.hz(), &mut rcc);
         motor1_timer.listen(Event::TimeOut);
@@ -85,6 +94,9 @@ const APP: () = {
         motor2_timer.listen(Event::TimeOut);
 
         let delay = Delay::new(core.SYST, &rcc);
+
+        let i2c = device.I2C1;
+        let i2c_slave = I2CSlave::new(i2c);
 
         defmt::debug!("Init done.");
         init::LateResources {
@@ -97,6 +109,7 @@ const APP: () = {
             motor2_step,
             motor1_dir,
             motor2_dir,
+            i2c_slave,
         }
     }
 
@@ -109,6 +122,7 @@ const APP: () = {
             delay.delay_ms(100u8);
             led.set_high().unwrap();
             delay.delay_ms(100u8);
+            cx.resources.dac.update();
         }
     }
 
@@ -127,4 +141,7 @@ const APP: () = {
             defmt::error!("Failed to wait for the motor2 timer.");
         }
     }
+
+    #[task(binds = I2C1, resources = [i2c_slave])]
+    fn i2c1_handler(cx: i2c1_handler::Context) {}
 };
