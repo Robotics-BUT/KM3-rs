@@ -49,19 +49,20 @@ impl I2CSlave {
     pub fn new(i2c: I2C1) -> Self {
         let rcc = unsafe { &(*stm32f0xx_hal::pac::RCC::ptr()) };
         rcc.apb1enr.modify(|_, w| w.i2c1en().enabled());
-        rcc.apb1rstr.modify(|_, w| w.i2c1rst().reset());
+        rcc.apb1rstr.modify(|_, w| w.i2c1rst().set_bit());
+        rcc.apb1rstr.modify(|_, w| w.i2c1rst().clear_bit());
 
         i2c.cr1.write(|w| {
             w.nostretch()
-                .disabled() // enable clock stretching
+                .enabled() // enable clock stretching
                 .anfoff()
                 .enabled() // enable analog filter
                 .dnf()
                 .no_filter() // disable digital filter
                 .errie()
                 .enabled() // error interrupt enabled
-                .tcie()
-                .enabled() // transmission complete interrupt enabled
+                // .tcie()
+                // .enabled() // transmission complete interrupt enabled
                 .stopie()
                 .enabled() // stop interrupt enabled
                 .nackie()
@@ -70,8 +71,8 @@ impl I2CSlave {
                 .enabled() // address match interrupt enabled
                 .rxie() // rx interrupt enabled
                 .enabled()
-                .txie() // tx interrupt enabled
-                .enabled()
+                // .txie() // tx interrupt enabled
+                // .enabled()
                 .wupen()
                 .enabled() // wake up when address match
         });
@@ -79,9 +80,24 @@ impl I2CSlave {
         // decide about using sbc with nbytes
         // set up timing for nostretch mode
 
-        i2c.oar1
-            .write(|w| w.oa1en().enabled().oa1().bits(0x55).oa1mode().bit7());
+        // let scll = cmp::max((((48_000_000 >> 1) >> 1) / KiloHertz(100).0) - 1, 255) as u8;
+        // i2c.timingr.write(|w| {
+        //     w.presc()
+        //         .bits(1)
+        //         .scldel()
+        //         .bits(4)
+        //         .sdadel()
+        //         .bits(2)
+        //         .sclh()
+        //         .bits(scll - 4)
+        //         .scll()
+        //         .bits(scll)
+        // });
 
+        i2c.oar1
+            .write(|w| w.oa1en().enabled().oa1().bits(0x55 << 1).oa1mode().bit7());
+
+        defmt::debug!("enable");
         i2c.cr1.modify(
             |_, w| w.pe().enabled(), // enable peripheral
         );
@@ -200,5 +216,32 @@ impl I2CSlave {
                 return false;
             }
         }
+    }
+
+    pub fn read(&self) -> u8 {
+        self.i2c.rxdr.read().bits() as u8
+    }
+
+    pub fn write(&self, value: u8) {
+        self.i2c.txdr.write(|w| w.txdata().bits(value));
+    }
+
+    pub fn set_txe(&self) {
+        self.i2c.isr.modify(|_, w| w.txe().set_bit());
+    }
+
+    // pub fn send_nack(&self) {
+    //     self.i2c.cr2.modify(|_, w| w.nack().nack());
+    // }
+
+    pub fn enable_txie(&self, enable: bool) {
+        self.i2c
+            .cr1
+            .modify(|_, w| w.txie().bit(enable).tcie().bit(enable));
+    }
+
+    pub fn dump(&self) {
+        let cr1 = self.i2c.isr.read().bits();
+        defmt::error!("cr1: {:0..31}", cr1);
     }
 }

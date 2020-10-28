@@ -2,8 +2,7 @@
 #![no_std]
 
 use km3_rs as _; // global logger + panicking-behavior + memory layout
-use km3_rs::dma::{DmaExt, TxDma};
-use km3_rs::i2c_slave::I2CSlave;
+use km3_rs::i2c_slave::{Direction, I2CSlave, Status};
 use km3_rs::timer::{Event, Timer};
 use km3_rs::write_spi::{Channel, MCP4922};
 use stm32f0xx_hal::delay::Delay;
@@ -14,6 +13,15 @@ use stm32f0xx_hal::{prelude::*, stm32};
 type DAC = MCP4922<PA7<Alternate<AF0>>, PA5<Alternate<AF0>>>;
 type Motor1Timer = Timer<stm32::TIM14>;
 type Motor2Timer = Timer<stm32::TIM16>;
+
+#[derive(PartialEq)]
+pub enum TransferState {
+    Idle,
+    Addressed,
+    RegisterSet,
+    Receiving,
+    Transmitting,
+}
 
 #[rtic::app(device = stm32f0xx_hal::stm32, peripherals = true)]
 const APP: () = {
@@ -28,6 +36,8 @@ const APP: () = {
         motor1_dir: Pin<Output<PushPull>>,
         motor2_dir: Pin<Output<PushPull>>,
         i2c_slave: I2CSlave,
+        #[init(TransferState::Idle)]
+        transfer_state: TransferState,
     }
 
     #[init]
@@ -50,7 +60,7 @@ const APP: () = {
             .freeze(&mut device.FLASH);
 
         let gpioa = device.GPIOA.split(&mut rcc);
-        let (motor1_dir, fault, led, motor2_step, motor2_dir, sck, cs, mosi, scl, sda) =
+        let (motor1_dir, _fault, led, motor2_step, motor2_dir, sck, cs, mosi, scl, sda) =
             cortex_m::interrupt::free(|cs| {
                 (
                     gpioa.pa0.into_push_pull_output(cs).downgrade(),
@@ -98,6 +108,8 @@ const APP: () = {
         let i2c = device.I2C1;
         let i2c_slave = I2CSlave::new(i2c);
 
+        i2c_slave.dump();
+
         defmt::debug!("Init done.");
         init::LateResources {
             led,
@@ -142,6 +154,65 @@ const APP: () = {
         }
     }
 
-    #[task(binds = I2C1, resources = [i2c_slave])]
-    fn i2c1_handler(cx: i2c1_handler::Context) {}
+    #[task(binds = I2C1, resources = [i2c_slave, transfer_state])]
+    fn i2c1_handler(cx: i2c1_handler::Context) {
+        let i2c: &mut I2CSlave = cx.resources.i2c_slave;
+        let state: &mut TransferState = cx.resources.transfer_state;
+        if *state == TransferState::Idle {
+            i2c.enable_txie(false);
+        }
+        if i2c.is_status(Status::AddressMatch(Direction::Write), true) {
+            *state = TransferState::Addressed;
+            defmt::debug!("Addressed.");
+        } else if i2c.is_status(Status::TxDataMustBeWritten, false) {
+            // this may be true more times than actual data length, ignore then
+            if *state == TransferState::Transmitting {
+                // state is not changed
+                i2c.write(0x66);
+                defmt::debug!("Transmitting: 0x66");
+            }
+        } else if i2c.is_status(Status::AddressMatch(Direction::Read), true) {
+            if *state == TransferState::RegisterSet {
+                defmt::debug!("Transmitting");
+                i2c.enable_txie(true);
+                *state = TransferState::Transmitting;
+            } else {
+                defmt::debug!("Master wants to read.");
+            }
+        } else if i2c.is_status(Status::RxNotEmpty, false) {
+            if *state == TransferState::Addressed {
+                *state = TransferState::RegisterSet;
+                let register = i2c.read();
+                defmt::debug!("RegisterSet {:u8}", register);
+            } else if *state == TransferState::RegisterSet {
+                *state = TransferState::Receiving;
+                defmt::debug!("Receiving");
+            } else if *state == TransferState::Receiving {
+                // do not change state, just read
+                defmt::debug!("RECV: {:u8}", i2c.read());
+            } else {
+                defmt::debug!("master wrote: {:u8}", i2c.read());
+            }
+        } else if i2c.is_status(Status::Stop, true) {
+            defmt::debug!("stopko");
+            *state = TransferState::Idle;
+        } else if i2c.is_status(Status::BusError, true) {
+            defmt::debug!("buserr");
+            *state = TransferState::Idle;
+        } else if i2c.is_status(Status::Overrun, true) {
+            defmt::debug!("overrun");
+            *state = TransferState::Idle;
+        } else if i2c.is_status(Status::ArbitrationLost, true) {
+            defmt::debug!("arlo");
+            *state = TransferState::Idle;
+        } else if i2c.is_status(Status::NACKReceived, true) {
+            defmt::debug!("nack");
+            *state = TransferState::Idle;
+        } else if i2c.is_status(Status::Timeout, true) {
+            defmt::debug!("timeout");
+            *state = TransferState::Idle;
+        } else {
+            defmt::error!("hello");
+        }
+    }
 };

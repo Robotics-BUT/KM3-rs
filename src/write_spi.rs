@@ -4,7 +4,6 @@ use stm32f0xx_hal::spi::{MosiPin, Phase, Polarity, SckPin};
 use stm32f0xx_hal::stm32;
 use stm32f0xx_hal::stm32::SPI1;
 
-use crate::dma::dma1::C3;
 use embedded_hal::spi::MODE_0;
 
 pub enum Channel {
