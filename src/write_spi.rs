@@ -36,15 +36,15 @@ where
         let mode = MODE_0;
         spi.cr1.write(|w| {
             w.cpha()
-                .bit(mode.phase == Phase::CaptureOnSecondTransition)
+                .first_edge()
                 .cpol()
-                .bit(mode.polarity == Polarity::IdleHigh)
+                .idle_low()
                 .mstr()
                 .master()
                 .br()
-                .div4()
+                .div8()
                 .lsbfirst()
-                .clear_bit()
+                .msbfirst()
                 .ssm()
                 .enabled()
                 .ssi()
@@ -87,18 +87,23 @@ where
             clamped_voltage = voltage;
         }
 
-        ((clamped_voltage * (2_u16.pow(12) as f32 - 1.0)) / 3.3) as u16
+        ((clamped_voltage * 0xfff as f32) / 3.3) as u16
     }
 
     pub fn update(&mut self) {
-        let raw_a = 0b0011 << 12 | self.raw_data_a;
-        let raw_b = 0b1011 << 12 | self.raw_data_b;
+        let raw_a = (0b0011 << 12) | self.raw_data_a;
+        let raw_b = (0b1011 << 12) | self.raw_data_b;
 
         self.cs.set_low().unwrap();
-        while self.spi.sr.read().ftlvl().bits() > 0 {}
+        while !self.spi.sr.read().txe().bit() {}
         self.spi.dr.write(|w| unsafe { w.bits(raw_a as u32) });
+        while self.spi.sr.read().bsy().bit_is_set() {}
+        self.cs.set_high().unwrap();
+
+        self.cs.set_low().unwrap();
+        while !self.spi.sr.read().txe().bit() {}
         self.spi.dr.write(|w| unsafe { w.bits(raw_b as u32) });
-        while self.spi.sr.read().txe().bit_is_clear() || self.spi.sr.read().bsy().bit_is_set() {}
+        while self.spi.sr.read().bsy().bit_is_set() {}
         self.cs.set_high().unwrap();
     }
 }

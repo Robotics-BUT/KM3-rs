@@ -2,7 +2,7 @@
 #![no_std]
 
 use km3_rs as _; // global logger + panicking-behavior + memory layout
-use km3_rs::i2c_slave::{Direction, I2CSlave, Status};
+use km3_rs::i2c_slave::{Direction, I2CSlave, State, Status};
 use km3_rs::timer::{Event, Timer};
 use km3_rs::write_spi::{Channel, MCP4922};
 use stm32f0xx_hal::delay::Delay;
@@ -13,15 +13,6 @@ use stm32f0xx_hal::{prelude::*, stm32};
 type DAC = MCP4922<PA7<Alternate<AF0>>, PA5<Alternate<AF0>>>;
 type Motor1Timer = Timer<stm32::TIM14>;
 type Motor2Timer = Timer<stm32::TIM16>;
-
-#[derive(PartialEq)]
-pub enum TransferState {
-    Idle,
-    Addressed,
-    RegisterSet,
-    Receiving,
-    Transmitting,
-}
 
 #[rtic::app(device = stm32f0xx_hal::stm32, peripherals = true)]
 const APP: () = {
@@ -36,8 +27,6 @@ const APP: () = {
         motor1_dir: Pin<Output<PushPull>>,
         motor2_dir: Pin<Output<PushPull>>,
         i2c_slave: I2CSlave,
-        #[init(TransferState::Idle)]
-        transfer_state: TransferState,
     }
 
     #[init]
@@ -60,7 +49,7 @@ const APP: () = {
             .freeze(&mut device.FLASH);
 
         let gpioa = device.GPIOA.split(&mut rcc);
-        let (motor1_dir, _fault, led, motor2_step, motor2_dir, sck, cs, mosi, scl, sda) =
+        let (mut motor1_dir, _fault, led, motor2_step, mut motor2_dir, sck, cs, mosi, scl, sda) =
             cortex_m::interrupt::free(|cs| {
                 (
                     gpioa.pa0.into_push_pull_output(cs).downgrade(),
@@ -81,7 +70,7 @@ const APP: () = {
             cortex_m::interrupt::free(|cs| gpiob.pb1.into_push_pull_output(cs).downgrade());
 
         let gpiof = device.GPIOF.split(&mut rcc);
-        let (enable, motor1_step) = cortex_m::interrupt::free(|cs| {
+        let (mut enable, motor1_step) = cortex_m::interrupt::free(|cs| {
             (
                 gpiof.pf1.into_push_pull_output(cs).downgrade(),
                 gpiof.pf0.into_push_pull_output(cs).downgrade(),
@@ -89,13 +78,16 @@ const APP: () = {
         });
 
         ldac.set_low().unwrap();
+        enable.set_low();
+        motor1_dir.set_low();
+        motor2_dir.set_low();
 
         // let dma = device.DMA1.split(&mut rcc);
         // let spi_channel = dma.3;
 
         let mut dac = MCP4922::new(device.SPI1, mosi, sck, cs);
-        dac.set_voltage(Channel::A, 2.0f32);
-        dac.set_voltage(Channel::B, 2.0f32);
+        dac.set_voltage(Channel::A, 0.3f32);
+        dac.set_voltage(Channel::B, 0.3f32);
 
         let mut motor1_timer = Timer::tim14(device.TIM14, 0.hz(), &mut rcc);
         motor1_timer.listen(Event::TimeOut);
@@ -107,8 +99,6 @@ const APP: () = {
 
         let i2c = device.I2C1;
         let i2c_slave = I2CSlave::new(i2c);
-
-        i2c_slave.dump();
 
         defmt::debug!("Init done.");
         init::LateResources {
@@ -138,81 +128,49 @@ const APP: () = {
         }
     }
 
-    #[task(binds = TIM14, resources = [motor1_timer])]
+    #[task(binds = TIM14, resources = [motor1_timer, motor1_step])]
     fn motor1_timer_handler(cx: motor1_timer_handler::Context) {
         let motor1_timer: &mut Motor1Timer = cx.resources.motor1_timer;
+        let mut motor1_step: &mut Pin<Output<PushPull>> = cx.resources.motor1_step;
         if motor1_timer.wait().is_err() {
             defmt::error!("Failed to wait for the motor1 timer.");
         }
+
+        motor1_step.toggle();
     }
 
-    #[task(binds = TIM16, resources = [motor2_timer])]
+    #[task(binds = TIM16, resources = [motor2_timer, motor2_step])]
     fn motor2_timer_handler(cx: motor2_timer_handler::Context) {
         let motor2_timer: &mut Motor2Timer = cx.resources.motor2_timer;
+        let mut motor2_step: &mut Pin<Output<PushPull>> = cx.resources.motor2_step;
         if motor2_timer.wait().is_err() {
             defmt::error!("Failed to wait for the motor2 timer.");
         }
+        motor2_step.toggle();
     }
 
-    #[task(binds = I2C1, resources = [i2c_slave, transfer_state])]
+    #[task(binds = I2C1, resources = [i2c_slave, motor1_timer, motor2_timer])]
     fn i2c1_handler(cx: i2c1_handler::Context) {
         let i2c: &mut I2CSlave = cx.resources.i2c_slave;
-        let state: &mut TransferState = cx.resources.transfer_state;
-        if *state == TransferState::Idle {
-            i2c.enable_txie(false);
-        }
-        if i2c.is_status(Status::AddressMatch(Direction::Write), true) {
-            *state = TransferState::Addressed;
-            defmt::debug!("Addressed.");
-        } else if i2c.is_status(Status::TxDataMustBeWritten, false) {
-            // this may be true more times than actual data length, ignore then
-            if *state == TransferState::Transmitting {
-                // state is not changed
-                i2c.write(0x66);
-                defmt::debug!("Transmitting: 0x66");
+        let motor1: &mut Motor1Timer = cx.resources.motor1_timer;
+        let motor2: &mut Motor2Timer = cx.resources.motor2_timer;
+        i2c.interrupt();
+        match i2c.get_state() {
+            None => {}
+            Some(State::DataReceived(register)) => {
+                let data = i2c.get_received_data();
+                motor1.start(((register as u32) * 10).hz());
+                motor2.start(((register as u32) * 10).hz());
+                defmt::error!("Finished Receiving {:u8}.", register);
             }
-        } else if i2c.is_status(Status::AddressMatch(Direction::Read), true) {
-            if *state == TransferState::RegisterSet {
-                defmt::debug!("Transmitting");
-                i2c.enable_txie(true);
-                *state = TransferState::Transmitting;
-            } else {
-                defmt::debug!("Master wants to read.");
+            Some(State::DataRequested(register)) => {
+                if register < 0x10 {
+                    i2c.set_transmit_buffer(&[register]);
+                } else {
+                    i2c.set_transmit_buffer(&[register, register + 1]);
+                }
+                defmt::error!("Data requested {:u8}.", register);
             }
-        } else if i2c.is_status(Status::RxNotEmpty, false) {
-            if *state == TransferState::Addressed {
-                *state = TransferState::RegisterSet;
-                let register = i2c.read();
-                defmt::debug!("RegisterSet {:u8}", register);
-            } else if *state == TransferState::RegisterSet {
-                *state = TransferState::Receiving;
-                defmt::debug!("Receiving");
-            } else if *state == TransferState::Receiving {
-                // do not change state, just read
-                defmt::debug!("RECV: {:u8}", i2c.read());
-            } else {
-                defmt::debug!("master wrote: {:u8}", i2c.read());
-            }
-        } else if i2c.is_status(Status::Stop, true) {
-            defmt::debug!("stopko");
-            *state = TransferState::Idle;
-        } else if i2c.is_status(Status::BusError, true) {
-            defmt::debug!("buserr");
-            *state = TransferState::Idle;
-        } else if i2c.is_status(Status::Overrun, true) {
-            defmt::debug!("overrun");
-            *state = TransferState::Idle;
-        } else if i2c.is_status(Status::ArbitrationLost, true) {
-            defmt::debug!("arlo");
-            *state = TransferState::Idle;
-        } else if i2c.is_status(Status::NACKReceived, true) {
-            defmt::debug!("nack");
-            *state = TransferState::Idle;
-        } else if i2c.is_status(Status::Timeout, true) {
-            defmt::debug!("timeout");
-            *state = TransferState::Idle;
-        } else {
-            defmt::error!("hello");
         }
     }
 };

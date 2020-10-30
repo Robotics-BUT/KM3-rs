@@ -1,7 +1,30 @@
 use stm32f0xx_hal::pac::I2C1;
 
+#[derive(PartialEq)]
+pub enum TransferState {
+    Idle,
+    Addressed,
+    RegisterSet,
+    Receiving,
+    Transmitting,
+}
+
+#[derive(Copy, Clone)]
+pub enum State {
+    DataRequested(u8),
+    DataReceived(u8),
+}
+
+const BUFFER_SIZE: usize = 32;
+
 pub struct I2CSlave {
     i2c: I2C1,
+    transfer_buffer: [u8; BUFFER_SIZE],
+    transfer_len: usize,
+    buffer_index: usize,
+    register: u8,
+    transfer_state: TransferState,
+    state: Option<State>,
 }
 
 // direction as specified in the datasheet
@@ -97,12 +120,19 @@ impl I2CSlave {
         i2c.oar1
             .write(|w| w.oa1en().enabled().oa1().bits(0x55 << 1).oa1mode().bit7());
 
-        defmt::debug!("enable");
         i2c.cr1.modify(
             |_, w| w.pe().enabled(), // enable peripheral
         );
 
-        I2CSlave { i2c }
+        I2CSlave {
+            i2c,
+            transfer_buffer: [0u8; BUFFER_SIZE],
+            transfer_len: 0,
+            buffer_index: 0,
+            register: 0,
+            transfer_state: TransferState::Idle,
+            state: None,
+        }
     }
 
     pub fn is_status(&self, status: Status, clear: bool) -> bool {
@@ -238,6 +268,119 @@ impl I2CSlave {
         self.i2c
             .cr1
             .modify(|_, w| w.txie().bit(enable).tcie().bit(enable));
+    }
+
+    pub fn interrupt(&mut self) {
+        if self.transfer_state == TransferState::Idle {
+            self.state = None;
+            self.enable_txie(false);
+        }
+
+        if self.is_status(Status::BusError, true) {
+            defmt::debug!("buserr");
+            self.handle_error();
+            return;
+        }
+        if self.is_status(Status::Overrun, true) {
+            defmt::debug!("overrun");
+            self.handle_error();
+            return;
+        }
+        if self.is_status(Status::ArbitrationLost, true) {
+            defmt::debug!("arlo");
+            self.handle_error();
+            return;
+        }
+        if self.is_status(Status::NACKReceived, true) {
+            defmt::debug!("nack");
+            self.handle_error();
+            return;
+        }
+        if self.is_status(Status::Timeout, true) {
+            defmt::debug!("timeout");
+            self.handle_error();
+            return;
+        }
+
+        if self.is_status(Status::RxNotEmpty, false) {
+            if self.transfer_state == TransferState::Addressed {
+                self.transfer_state = TransferState::RegisterSet;
+                self.register = self.read();
+            } else if self.transfer_state == TransferState::RegisterSet {
+                self.transfer_state = TransferState::Receiving;
+            } else if self.transfer_state == TransferState::Receiving {
+                // do not change state, just read
+                self.transfer_buffer[self.buffer_index] = self.read();
+                defmt::debug!("RECV: {:u8}", self.buffer_index as u8);
+                self.buffer_index += 1;
+            }
+        }
+
+        if self.is_status(Status::Stop, true) {
+            // handle reception
+            if self.transfer_state == TransferState::Receiving {
+                self.state = Some(State::DataReceived(self.register));
+            } else if self.transfer_state == TransferState::Transmitting {
+                // data was transmitted, nothing else to do
+                self.state = None;
+            }
+            self.i2c.isr.modify(|_, w| w.txe().set_bit()); // flush txdr
+            self.transfer_state = TransferState::Idle;
+        }
+
+        if self.is_status(Status::AddressMatch(Direction::Write), true) {
+            self.transfer_state = TransferState::Addressed;
+        }
+        if self.is_status(Status::TxDataMustBeWritten, false) {
+            // this may be true more times than actual data length, ignore then
+            if self.transfer_state == TransferState::Transmitting {
+                // state is not changed
+                if self.buffer_index < self.transfer_len {
+                    self.write(self.transfer_buffer[self.buffer_index]);
+                    defmt::debug!("Transmitting: {:u8}", self.buffer_index as u8);
+                    self.buffer_index += 1;
+                } else {
+                    self.enable_txie(false);
+                    self.state = None;
+                }
+            }
+        }
+        if self.is_status(Status::AddressMatch(Direction::Read), true) {
+            if self.transfer_state == TransferState::RegisterSet {
+                self.enable_txie(true);
+                self.transfer_state = TransferState::Transmitting;
+                self.state = Some(State::DataRequested(self.register));
+            }
+        }
+    }
+
+    fn handle_error(&mut self) {
+        self.transfer_state = TransferState::Idle;
+        self.state = None;
+        self.transfer_len = 0;
+        self.buffer_index = 0;
+        self.i2c.isr.modify(|_, w| w.txe().set_bit()); // flush txdr
+    }
+
+    pub fn set_transmit_buffer(&mut self, buffer: &[u8]) {
+        for (index, item) in buffer.iter().enumerate() {
+            self.transfer_buffer[index] = *item;
+        }
+        self.transfer_len = buffer.len();
+        self.buffer_index = 0;
+        self.state = None
+    }
+
+    pub fn get_received_data(&mut self) -> &[u8] {
+        let data = &self.transfer_buffer[..self.transfer_len];
+        self.state = None;
+        self.buffer_index = 0;
+        self.transfer_len = 0;
+        data
+    }
+
+    pub fn get_state(&self) -> Option<State> {
+        self.state
     }
 
     pub fn dump(&self) {
