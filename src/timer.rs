@@ -3,6 +3,12 @@ use stm32f0xx_hal::rcc::{Clocks, Rcc};
 use stm32f0xx_hal::time::Hertz;
 use void::Void;
 
+pub trait Updatable {
+    type Time;
+
+    fn update<T: Into<Self::Time>>(&mut self, timeout: T);
+}
+
 /// Interrupt events
 pub enum Event {
     /// Timer timed out / count down ended
@@ -82,9 +88,9 @@ macro_rules! my_timers {
                     T: Into<Hertz>,
                 {
                     // pause
-                    self.tim.cr1.modify(|_, w| w.cen().clear_bit());
-                    // restart counter
-                    self.tim.cnt.reset();
+                    // self.tim.cr1.modify(|_, w| w.cen().clear_bit());
+                    // // restart counter
+                    // self.tim.cnt.reset();
 
                     let frequency = timeout.into().0;
 
@@ -119,6 +125,38 @@ macro_rules! my_timers {
                         self.tim.sr.modify(|_, w| w.uif().clear_bit());
                         Ok(())
                     }
+                }
+            }
+
+            impl Updatable for Timer<$TIM> {
+                type Time = Hertz;
+
+                fn update<T>(&mut self, timeout: T)
+                where
+                    T: Into<Hertz>,
+                {
+                    let frequency = timeout.into().0;
+
+                    if frequency == 0 {
+                        self.tim.cr1.modify(|_, w| w.cen().clear_bit());
+                        return;
+                    } else {
+                        self.tim.cr1.modify(|_, w| w.cen().set_bit());
+                    }
+
+                    // If pclk is prescaled from hclk, the frequency fed into the timers is doubled
+                    let tclk = if self.clocks.hclk().0 == self.clocks.pclk().0 {
+                        self.clocks.pclk().0
+                    } else {
+                        self.clocks.pclk().0 * 2
+                    };
+                    let ticks = tclk / frequency;
+
+                    let psc = cast::u16((ticks - 1) / (1 << 16)).unwrap();
+                    self.tim.psc.write(|w| w.psc().bits(psc));
+
+                    let arr = cast::u16(ticks / cast::u32(psc + 1)).unwrap();
+                    self.tim.arr.write(|w| unsafe { w.bits(cast::u32(arr)) });
                 }
             }
 

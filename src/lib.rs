@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod dma;
+pub mod driver;
 pub mod i2c_slave;
 pub mod timer;
 pub mod write_spi;

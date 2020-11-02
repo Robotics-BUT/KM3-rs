@@ -311,7 +311,6 @@ impl I2CSlave {
             } else if self.transfer_state == TransferState::Receiving {
                 // do not change state, just read
                 self.transfer_buffer[self.buffer_index] = self.read();
-                defmt::debug!("RECV: {:u8}", self.buffer_index as u8);
                 self.buffer_index += 1;
             }
         }
@@ -372,7 +371,7 @@ impl I2CSlave {
     }
 
     pub fn get_received_data(&mut self) -> &[u8] {
-        let data = &self.transfer_buffer[..self.transfer_len];
+        let data = &self.transfer_buffer[..self.buffer_index];
         self.state = None;
         self.buffer_index = 0;
         self.transfer_len = 0;

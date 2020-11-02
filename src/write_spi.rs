@@ -1,10 +1,8 @@
 use stm32f0xx_hal::gpio::{Output, Pin, PushPull};
 use stm32f0xx_hal::prelude::*;
-use stm32f0xx_hal::spi::{MosiPin, Phase, Polarity, SckPin};
+use stm32f0xx_hal::spi::{MosiPin, SckPin};
 use stm32f0xx_hal::stm32;
 use stm32f0xx_hal::stm32::SPI1;
-
-use embedded_hal::spi::MODE_0;
 
 pub enum Channel {
     A,
@@ -15,6 +13,7 @@ pub struct MCP4922<MOSI, SCK> {
     _sck: SCK,
     _mosi: MOSI,
     cs: Pin<Output<PushPull>>,
+    ldac: Pin<Output<PushPull>>,
     spi: SPI1,
     raw_data_a: u16,
     raw_data_b: u16,
@@ -25,7 +24,13 @@ where
     MOSI: MosiPin<SPI1>,
     SCK: SckPin<SPI1>,
 {
-    pub fn new(spi: SPI1, mosi: MOSI, sck: SCK, cs: Pin<Output<PushPull>>) -> Self {
+    pub fn new(
+        spi: SPI1,
+        mosi: MOSI,
+        sck: SCK,
+        cs: Pin<Output<PushPull>>,
+        mut ldac: Pin<Output<PushPull>>,
+    ) -> Self {
         unsafe {
             let rcc = &(*stm32::RCC::ptr());
             rcc.apb2enr.modify(|_, w| w.spi1en().enabled());
@@ -33,7 +38,6 @@ where
             rcc.apb2rstr.modify(|_, w| w.spi1rst().clear_bit());
         }
 
-        let mode = MODE_0;
         spi.cr1.write(|w| {
             w.cpha()
                 .first_edge()
@@ -60,10 +64,13 @@ where
         spi.cr2
             .write(|w| w.frxth().half().ds().sixteen_bit().ssoe().disabled());
 
+        ldac.set_low().unwrap();
+
         Self {
             _sck: sck,
             _mosi: mosi,
             cs,
+            ldac,
             spi,
             raw_data_a: 0,
             raw_data_b: 0,
