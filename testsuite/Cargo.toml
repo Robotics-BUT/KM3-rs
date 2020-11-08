@@ -12,11 +12,11 @@ harness = false
 
 [dependencies.defmt]
 git = "https://github.com/knurling-rs/defmt"
-rev = "28c1afb4d3bad747ef47737a83f5c8b13928cb8a"
+branch = "main"
 
 [dependencies.defmt-rtt]
 git = "https://github.com/knurling-rs/defmt"
-rev = "28c1afb4d3bad747ef47737a83f5c8b13928cb8a"
+branch = "main"
 
 [dependencies.panic-probe]
 git = "https://github.com/knurling-rs/probe-run"

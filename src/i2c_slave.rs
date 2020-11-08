@@ -1,3 +1,4 @@
+use stm32f0xx_hal::i2c::{SclPin, SdaPin};
 use stm32f0xx_hal::pac::I2C1;
 
 #[derive(PartialEq)]
@@ -17,7 +18,7 @@ pub enum State {
 
 const BUFFER_SIZE: usize = 32;
 
-pub struct I2CSlave {
+pub struct I2CSlave<SDA, SCL> {
     i2c: I2C1,
     transfer_buffer: [u8; BUFFER_SIZE],
     transfer_len: usize,
@@ -25,6 +26,8 @@ pub struct I2CSlave {
     register: u8,
     transfer_state: TransferState,
     state: Option<State>,
+    _sda: SDA,
+    _scl: SCL,
 }
 
 // direction as specified in the datasheet
@@ -68,8 +71,12 @@ pub enum Status {
     TxEmpty,
 }
 
-impl I2CSlave {
-    pub fn new(i2c: I2C1) -> Self {
+impl<SDA, SCL> I2CSlave<SDA, SCL>
+where
+    SDA: SdaPin<I2C1>,
+    SCL: SclPin<I2C1>,
+{
+    pub fn new(i2c: I2C1, sda: SDA, scl: SCL) -> Self {
         let rcc = unsafe { &(*stm32f0xx_hal::pac::RCC::ptr()) };
         rcc.apb1enr.modify(|_, w| w.i2c1en().enabled());
         rcc.apb1rstr.modify(|_, w| w.i2c1rst().set_bit());
@@ -132,6 +139,8 @@ impl I2CSlave {
             register: 0,
             transfer_state: TransferState::Idle,
             state: None,
+            _sda: sda,
+            _scl: scl,
         }
     }
 

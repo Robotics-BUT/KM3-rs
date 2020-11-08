@@ -391,7 +391,7 @@ macro_rules! dma {
                 impl DmaExt for $DMAX {
                     type Channels = Channels;
 
-                    fn split(self, rcc: &mut Rcc) -> Channels {
+                    fn split(self, _rcc: &mut Rcc) -> Channels {
                         let raw_rcc = unsafe { &(*stm32f0xx_hal::pac::RCC::ptr()) };
                         raw_rcc.ahbenr.modify(|_, w| w.$dmaen().set_bit());
 

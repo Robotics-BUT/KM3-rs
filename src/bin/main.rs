@@ -5,29 +5,21 @@ use byteorder::{ByteOrder, LittleEndian};
 use km3_rs as _; // global logger + panicking-behavior + memory layout
 use km3_rs::driver::Driver;
 use km3_rs::i2c_slave::{I2CSlave, State};
-use km3_rs::timer::{Event, Timer};
 use km3_rs::write_spi::{Channel, MCP4922};
 use stm32f0xx_hal::delay::Delay;
-use stm32f0xx_hal::gpio::gpioa::{PA5, PA7};
-use stm32f0xx_hal::gpio::{Alternate, Output, Pin, PushPull, AF0};
-use stm32f0xx_hal::{prelude::*, stm32};
+use stm32f0xx_hal::gpio::gpioa::{PA10, PA9};
+use stm32f0xx_hal::gpio::{Alternate, Output, Pin, PushPull, AF4};
+use stm32f0xx_hal::prelude::*;
 
-type DAC = MCP4922<PA7<Alternate<AF0>>, PA5<Alternate<AF0>>>;
-const FAILSAFE_COUNTER_TOP: u8 = 4;
+type I2C = I2CSlave<PA10<Alternate<AF4>>, PA9<Alternate<AF4>>>;
 
 #[rtic::app(device = stm32f0xx_hal::stm32, peripherals = true)]
 const APP: () = {
     struct Resources {
         led: Pin<Output<PushPull>>,
-        dac: DAC,
         delay: Delay,
-        motor1: Driver<Timer<stm32::TIM14>>,
-        motor2: Driver<Timer<stm32::TIM16>>,
-        update_timer: Timer<stm32::TIM2>,
-        failsafe_timer: Timer<stm32::TIM3>,
-        #[init(0)]
-        failsafe_counter: u8,
-        i2c_slave: I2CSlave,
+        driver: Driver,
+        i2c_slave: I2C,
     }
 
     #[init]
@@ -45,7 +37,7 @@ const APP: () = {
             .freeze(&mut device.FLASH);
 
         let gpioa = device.GPIOA.split(&mut rcc);
-        let (mut motor1_dir, _fault, led, motor2_step, mut motor2_dir, sck, cs, mosi, scl, sda) =
+        let (motor1_dir, fault, led, motor2_step, motor2_dir, sck, cs, mosi, scl, sda) =
             cortex_m::interrupt::free(|cs| {
                 (
                     gpioa.pa0.into_push_pull_output(cs).downgrade(),
@@ -62,8 +54,7 @@ const APP: () = {
             });
 
         let gpiob = device.GPIOB.split(&mut rcc);
-        let mut ldac =
-            cortex_m::interrupt::free(|cs| gpiob.pb1.into_push_pull_output(cs).downgrade());
+        let ldac = cortex_m::interrupt::free(|cs| gpiob.pb1.into_push_pull_output(cs).downgrade());
 
         let gpiof = device.GPIOF.split(&mut rcc);
         let (mut enable, motor1_step) = cortex_m::interrupt::free(|cs| {
@@ -79,39 +70,36 @@ const APP: () = {
         dac.set_voltage(Channel::A, 0.4f32);
         dac.set_voltage(Channel::B, 0.4f32);
 
-        let mut motor1_timer = Timer::tim14(device.TIM14, 0.hz(), &mut rcc);
-        motor1_timer.listen(Event::TimeOut);
-        let motor1 = Driver::new(motor1_timer, motor1_step, motor1_dir);
-
-        let mut motor2_timer = Timer::tim16(device.TIM16, 0.hz(), &mut rcc);
-        motor2_timer.listen(Event::TimeOut);
-        let motor2 = Driver::new(motor2_timer, motor2_step, motor2_dir);
-
-        let mut update_timer = Timer::tim2(device.TIM2, 50.hz(), &mut rcc);
-        update_timer.listen(Event::TimeOut);
-
-        let mut failsafe_timer = Timer::tim3(device.TIM3, 2.hz(), &mut rcc);
-        failsafe_timer.listen(Event::TimeOut);
+        let driver = Driver::new(
+            device.TIM14,
+            device.TIM16,
+            device.TIM2,
+            device.TIM3,
+            dac,
+            motor1_step,
+            motor1_dir,
+            motor2_step,
+            motor2_dir,
+            enable,
+            fault,
+            rcc.clocks,
+        );
 
         let delay = Delay::new(core.SYST, &rcc);
 
         let i2c = device.I2C1;
-        let i2c_slave = I2CSlave::new(i2c);
+        let i2c_slave = I2CSlave::new(i2c, sda, scl);
 
         defmt::debug!("Init done.");
         init::LateResources {
             led,
             delay,
-            dac,
-            motor1,
-            motor2,
-            update_timer,
-            failsafe_timer,
+            driver,
             i2c_slave,
         }
     }
 
-    #[idle(resources = [delay, led, dac])]
+    #[idle(resources = [delay, led])]
     fn idle(cx: idle::Context) -> ! {
         let delay: &mut Delay = cx.resources.delay;
         let led: &mut Pin<Output<PushPull>> = cx.resources.led;
@@ -120,58 +108,38 @@ const APP: () = {
             delay.delay_ms(100u8);
             led.set_high().unwrap();
             delay.delay_ms(100u8);
-            cx.resources.dac.update();
         }
     }
 
-    #[task(binds = TIM2, resources = [motor1, motor2, update_timer])]
+    #[task(binds = TIM2, resources = [driver])]
     fn update_timer_handler(cx: update_timer_handler::Context) {
-        cx.resources.update_timer.wait();
-        cx.resources.motor1.update();
-        cx.resources.motor2.update();
+        cx.resources.driver.tim2_tick();
     }
 
-    #[task(binds = TIM3, resources = [motor1, motor2, failsafe_timer, failsafe_counter])]
+    #[task(binds = TIM3, resources = [driver])]
     fn failsafe_timer_tick(cx: failsafe_timer_tick::Context) {
-        let counter: &mut u8 = cx.resources.failsafe_counter;
-        if cx.resources.failsafe_timer.wait().is_err() {
-            defmt::error!("Failed to wait for the failsafe timer.");
-        }
-
-        if *counter == 0 {
-            cx.resources.motor1.set_speed(0.0);
-            cx.resources.motor2.set_speed(0.0);
-            defmt::warn!("Failsafe timer engaged.");
-        } else {
-            *counter -= 1;
-        }
+        cx.resources.driver.tim3_tick();
     }
 
-    #[task(binds = TIM14, resources = [motor1])]
+    #[task(binds = TIM14, resources = [driver])]
     fn motor1_timer_handler(cx: motor1_timer_handler::Context) {
-        if cx.resources.motor1.tick().is_err() {
-            defmt::error!("Failed to wait for the motor1 timer.");
-        }
+        cx.resources.driver.tim14_tick();
     }
 
-    #[task(binds = TIM16, resources = [motor2])]
+    #[task(binds = TIM16, resources = [driver])]
     fn motor2_timer_handler(cx: motor2_timer_handler::Context) {
-        if cx.resources.motor2.tick().is_err() {
-            defmt::error!("Failed to wait for the motor2 timer.");
-        }
+        cx.resources.driver.tim16_tick();
     }
 
-    #[task(binds = I2C1, resources = [i2c_slave, motor1, motor2, failsafe_counter])]
+    #[task(binds = I2C1, resources = [i2c_slave, driver])]
     fn i2c1_handler(cx: i2c1_handler::Context) {
-        let i2c: &mut I2CSlave = cx.resources.i2c_slave;
-        let motor1: &mut Driver<Timer<stm32::TIM14>> = cx.resources.motor1;
-        let motor2: &mut Driver<Timer<stm32::TIM16>> = cx.resources.motor2;
+        let i2c: &mut I2C = cx.resources.i2c_slave;
+        let driver: &mut Driver = cx.resources.driver;
         i2c.interrupt();
         match i2c.get_state() {
             None => {}
             Some(State::DataReceived(register)) => {
                 let data = i2c.get_received_data();
-                *cx.resources.failsafe_counter = FAILSAFE_COUNTER_TOP;
                 match register {
                     0x10 => {
                         if data.len() != 8 {
@@ -184,21 +152,21 @@ const APP: () = {
                         }
                         let speed1 = LittleEndian::read_f32(&data[..4]);
                         let speed2 = LittleEndian::read_f32(&data[4..8]);
-                        motor1.set_speed(speed1);
-                        motor2.set_speed(speed2);
+                        driver.set_speeds(speed1, speed2);
                     }
                     _ => {}
                 }
-                defmt::error!("Finished Receiving {:u8}.", register);
             }
-            Some(State::DataRequested(register)) => {
-                if register < 0x10 {
-                    i2c.set_transmit_buffer(&[register]);
-                } else {
-                    i2c.set_transmit_buffer(&[register, register + 1]);
+            Some(State::DataRequested(register)) => match register {
+                0x20 => {
+                    let mut data = [0u8; 8];
+                    let odometry = driver.get_raw_odometry();
+                    LittleEndian::write_i32(&mut data[..4], odometry.0);
+                    LittleEndian::write_i32(&mut data[4..], odometry.1);
+                    i2c.set_transmit_buffer(&data);
                 }
-                defmt::error!("Data requested {:u8}.", register);
-            }
+                _ => {}
+            },
         }
     }
 };
