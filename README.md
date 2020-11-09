@@ -27,7 +27,7 @@ $ cargo install \
 #### 3. Useful tools:
 
 ```
-$ cargo install cargo-generate cargo-bloat
+$ cargo install cargo-binutils cargo-bloat
 ```
 ## Usage
 
