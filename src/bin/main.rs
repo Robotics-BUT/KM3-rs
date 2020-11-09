@@ -4,9 +4,10 @@
 use byteorder::{ByteOrder, LittleEndian};
 use core::convert::TryFrom;
 use km3_rs as _; // global logger + panicking-behavior + memory layout
-use km3_rs::driver::Driver;
+use km3_rs::driver::{Driver, DRIVER_OK};
 use km3_rs::i2c_slave::{I2CSlave, State};
 use km3_rs::mcp4922::{Channel, MCP4922};
+use km3_rs::registers::Register;
 use stm32f0xx_hal::delay::Delay;
 use stm32f0xx_hal::gpio::gpioa::{PA10, PA9};
 use stm32f0xx_hal::gpio::{Alternate, Output, Pin, PushPull, AF4};
@@ -15,29 +16,6 @@ use stm32f0xx_hal::prelude::*;
 type I2C = I2CSlave<PA10<Alternate<AF4>>, PA9<Alternate<AF4>>>;
 
 const I2C_ADDRESS: u8 = 0x55;
-
-enum Register {
-    TargetSpeed,
-    Odometry,
-    RampFrequency,
-    RampStep,
-    FaultStatus,
-}
-
-impl TryFrom<u8> for Register {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0x10 => Ok(Self::TargetSpeed),
-            0x20 => Ok(Self::Odometry),
-            0x30 => Ok(Self::RampFrequency),
-            0x40 => Ok(Self::RampStep),
-            0x50 => Ok(Self::FaultStatus),
-            _ => Err(()),
-        }
-    }
-}
 
 #[rtic::app(device = stm32f0xx_hal::stm32, peripherals = true)]
 const APP: () = {
@@ -125,13 +103,15 @@ const APP: () = {
         }
     }
 
-    #[idle(resources = [delay, led])]
-    fn idle(cx: idle::Context) -> ! {
+    #[idle(resources = [delay, led, driver])]
+    fn idle(mut cx: idle::Context) -> ! {
         let delay: &mut Delay = cx.resources.delay;
         let led: &mut Pin<Output<PushPull>> = cx.resources.led;
         loop {
-            led.set_low().unwrap();
-            delay.delay_ms(100u8);
+            if cx.resources.driver.lock(|driver| driver.get_fault_status()) == DRIVER_OK {
+                led.set_low().unwrap();
+                delay.delay_ms(100u8);
+            }
             led.set_high().unwrap();
             delay.delay_ms(100u8);
         }

@@ -4,6 +4,7 @@ pub mod dma;
 pub mod driver;
 pub mod i2c_slave;
 pub mod mcp4922;
+pub mod registers;
 pub mod timer;
 
 use core::sync::atomic::{AtomicUsize, Ordering};

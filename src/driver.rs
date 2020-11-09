@@ -12,6 +12,9 @@ const FAILSAFE_COUNTER_TOP: u8 = 4;
 const DEFAULT_RAMP_FREQ: u16 = 100;
 const DEFAULT_RAMP_STEP: f32 = 1.0;
 
+pub const DRIVER_OK: u8 = 0xFF;
+pub const DRIVER_FAULT: u8 = 0x00;
+
 pub struct Driver {
     timer1: stm32::TIM14,
     timer2: stm32::TIM16,
@@ -166,9 +169,9 @@ impl Driver {
     /// Returns 0 if the fault pin is LOW and 0xff if the fault pin is high.
     pub fn get_fault_status(&self) -> u8 {
         if self.fault.is_high().unwrap() {
-            0xff
+            DRIVER_OK
         } else {
-            0x00
+            DRIVER_FAULT
         }
     }
 
