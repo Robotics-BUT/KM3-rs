@@ -3,8 +3,8 @@
 pub mod dma;
 pub mod driver;
 pub mod i2c_slave;
+pub mod mcp4922;
 pub mod timer;
-pub mod write_spi;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 

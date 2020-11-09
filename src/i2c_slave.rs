@@ -76,7 +76,7 @@ where
     SDA: SdaPin<I2C1>,
     SCL: SclPin<I2C1>,
 {
-    pub fn new(i2c: I2C1, sda: SDA, scl: SCL) -> Self {
+    pub fn new(i2c: I2C1, address: u8, sda: SDA, scl: SCL) -> Self {
         let rcc = unsafe { &(*stm32f0xx_hal::pac::RCC::ptr()) };
         rcc.apb1enr.modify(|_, w| w.i2c1en().enabled());
         rcc.apb1rstr.modify(|_, w| w.i2c1rst().set_bit());
@@ -124,8 +124,14 @@ where
         //         .bits(scll)
         // });
 
-        i2c.oar1
-            .write(|w| w.oa1en().enabled().oa1().bits(0x55 << 1).oa1mode().bit7());
+        i2c.oar1.write(|w| {
+            w.oa1en()
+                .enabled()
+                .oa1()
+                .bits((address as u16) << 1)
+                .oa1mode()
+                .bit7()
+        });
 
         i2c.cr1.modify(
             |_, w| w.pe().enabled(), // enable peripheral
