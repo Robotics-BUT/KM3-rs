@@ -396,9 +396,4 @@ where
     pub fn get_state(&self) -> Option<State> {
         self.state
     }
-
-    pub fn dump(&self) {
-        let cr1 = self.i2c.isr.read().bits();
-        defmt::error!("cr1: {:0..31}", cr1);
-    }
 }

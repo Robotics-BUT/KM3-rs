@@ -198,11 +198,18 @@ const APP: () = {
                         LittleEndian::write_f32(&mut data[4..], speeds.1);
                         i2c.set_transmit_buffer(&data);
                     }
-                    Register::Odometry => {
+                    Register::RawOdometry => {
                         let mut data = [0u8; 8];
                         let odometry = driver.get_raw_odometry();
                         LittleEndian::write_i32(&mut data[..4], odometry.0);
                         LittleEndian::write_i32(&mut data[4..], odometry.1);
+                        i2c.set_transmit_buffer(&data);
+                    }
+                    Register::Odometry => {
+                        let mut data = [0u8; 8];
+                        let odometry = driver.get_odometry();
+                        LittleEndian::write_f32(&mut data[..4], odometry.0);
+                        LittleEndian::write_f32(&mut data[4..], odometry.1);
                         i2c.set_transmit_buffer(&data);
                     }
                     Register::RampFrequency => {

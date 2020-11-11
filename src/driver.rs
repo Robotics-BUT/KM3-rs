@@ -15,6 +15,8 @@ const DEFAULT_RAMP_STEP: f32 = 1.0;
 pub const DRIVER_OK: u8 = 0xFF;
 pub const DRIVER_FAULT: u8 = 0x00;
 
+pub const STEPS_PER_REV: f32 = 200.0 * 32.0;
+
 pub struct Driver {
     timer1: stm32::TIM14,
     timer2: stm32::TIM16,
@@ -137,6 +139,16 @@ impl Driver {
         self.first_motor.count = 0;
         self.second_motor.count = 0;
         odometry
+    }
+
+    /// Returns odometry in revolutions for both of the motors.
+    /// Resets odometry on read.
+    pub fn get_odometry(&mut self) -> (f32, f32) {
+        let odometry = self.get_raw_odometry();
+        (
+            (odometry.0 as f32) * 2.0 / STEPS_PER_REV,
+            (odometry.1 as f32) * 2.0 / STEPS_PER_REV,
+        )
     }
 
     /// Sets value of step that is added or subtracted on every ramp update.
@@ -287,11 +299,13 @@ struct Part {
 impl Part {
     pub fn on_tick(&mut self) {
         self.step.toggle().unwrap();
+        // if self.step.is_set_high().unwrap() {
         self.count += if self.dir.is_set_high().unwrap() {
             1
         } else {
             -1
         };
+        // }
     }
 
     pub fn update(&mut self, step: f32) -> (f32, Hertz) {
@@ -316,7 +330,7 @@ impl Part {
             0.7 // steppers are accelerating or decelerating
         };
 
-        // double the frequency to generatee rising edges at the desired frequency
+        // double the frequency to generate rising edges at the desired frequency
         let raw_speed = (libm::fabsf(self.current_speed) / 60.0f32 * 200f32 * 2.0 * 32f32) as u32;
         (current, raw_speed.hz())
     }
