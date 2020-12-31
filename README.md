@@ -45,6 +45,10 @@ cargo run --release
 KM3-rs firmware was developed using tools that are part of the [Knurling] project, [Ferrous Systems]' effort at improving tooling used to develop for embedded systems. Various libraries contributed by the Rust and embedded Rust communities were also used.
 
 Development of the firmware was sponsored by the Robotics and AI research group at Faculty of Electrical Engineering and Communications at Brno University of Technology.
+
+
+![but logo](uamt_logo.png)
+
 ## License
 MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
